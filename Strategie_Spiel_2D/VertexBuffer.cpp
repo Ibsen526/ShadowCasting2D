@@ -28,6 +28,7 @@ void VertexBuffer::Bind()
 {
 	glBindVertexArray(vao);
 }
+
 void VertexBuffer::Unbind()
 {
 	glBindVertexArray(0);

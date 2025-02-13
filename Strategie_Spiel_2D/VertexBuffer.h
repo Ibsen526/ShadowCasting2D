@@ -1,7 +1,7 @@
 #include<iostream>
 #include <GL/glew.h>
-#include <SDL.h>
-#include <SDL_image.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
 #include <GL/GL.h>
 #include <GL/GLU.h>
 
@@ -10,6 +10,7 @@
 class VertexBuffer
 {
 public:
+	VertexBuffer() { bufferID = 0; vao = 0; }
 	VertexBuffer(void* data, int numVertices);
 	~VertexBuffer();
 

@@ -1,9 +1,8 @@
 #include<iostream>
-#define GLEW_STATIC
 #include <GL/glew.h>
 #define SDL_MAIN_HANDLED
-#include <SDL.h>
-#include <SDL_image.h>
+#include <SDL2/SDL.h>
+#include <SDL2/SDL_image.h>
 #include <GL/GL.h>
 #include <GL/GLU.h>
 #include <cmath>
@@ -15,44 +14,82 @@
 #include "Shader.h"
 #include "Field.h"
 #include "LightMap.h"
+#include "Util.h"
+
+// Exit window crashes!!
 
 void OpenGLDebugCallback(GLenum source, GLenum type, GLuint id, GLenum severity,
 	GLsizei lenght, const GLchar* message, const void* userParam) //Bei Fehler ruft OpenGl diese Funktion auf
 {
-	std::cout << "[OpenGL Error] " << message << std::endl;
+	if (severity == GL_DEBUG_SEVERITY_HIGH || severity == GL_DEBUG_SEVERITY_MEDIUM)
+		std::cout << "[OpenGL Error] " << message << std::endl;
 }
 
-#define WHITE true
-#define BLACK false
+#define WHITE 1.0f
+#define BLACK 0.0f
 
-void glClearScreen(bool backIsWhite)
+void DrawOneLight(Util& util, LightMap& light, float x, float y, float xn, float yn)
 {
-	if (backIsWhite)
-		glClearColor(1.0f, 1.0f, 1.0f, 1.0f);
-	else
-		glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
-	glClear(GL_COLOR_BUFFER_BIT);
+	light.vertices.clear();
+	light.indices.clear();
+
+	light.CalcShadows(xn, yn,
+		util.vecLines, util.field.verticesWLight);
+	glUniform1f(util.lightRadiusUniformId, light.power);
+	glUniform1f(util.lightIntensityUniformId, light.intensity);
+
+	VertexBuffer lightVertexBuffer = VertexBuffer(&light.vertices[0], (int)light.vertices.size());
+	IndexBuffer lightIndexBuffer = IndexBuffer(&light.indices[0], (int)light.indices.size(), sizeof(light.indices[0]));
+
+	glUniform2f(util.lightPosUniformId, x, (float)util.SH - y); 
+	glUniform3f(util.lightColorUniformId, light.red, light.green, light.blue);
+
+	glBlendFuncSeparate(GL_SRC_ALPHA, GL_DST_ALPHA, GL_SRC_ALPHA, GL_DST_ALPHA);
+	Util::DrawVerticesWithIndex(&lightVertexBuffer, &lightIndexBuffer, light.indices.size());
+	glBlendFuncSeparate(GL_SRC_ALPHA, GL_DST_ALPHA, GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	Util::DrawVerticesWithIndex(util.fieldVbo, util.fieldIbo, util.field.indices.size());
 }
 
-void glDrawVerticesWithIndex(SDL_Window* window, VertexBuffer* v, IndexBuffer* i, std::vector<Uint32> indices)
+void CalcShadows(Util& util)
 {
-	v->Bind();
-	i->Bind();
-	glDrawElements(GL_TRIANGLES, indices.size(), GL_UNSIGNED_INT, 0);
-	i->Unbind();
-	v->Unbind();
+	Util::ClearScreen(BLACK);
+
+	//Blend in the lights
+	glEnable(GL_BLEND);
+	//glBlendFunc(GL_SRC_ALPHA, GL_DST_ALPHA);
+	util.lightShader->Bind();
+
+	int mouseX, mouseY;
+	SDL_GetMouseState(&mouseX, &mouseY);
+
+	DrawOneLight(util, util.playerLight, mouseX, mouseY,
+		(float)mouseX / (float)util.SW * 2.0f - 1.0f, 
+		-((float)mouseY / (float)util.SH * 2.0f - 1.0f));
+
+	for (LightMap& lm : util.envLights)
+	{
+		DrawOneLight(util, lm, 
+			(lm.posX + 1.0f) * util.SW / 2.0f,
+			(lm.posY + 1.0f) * util.SH / 2.0f,
+			lm.posX, -lm.posY);
+	}
+
+	util.lightShader->Unbind();
+
+
+	//Blend the scene/ objects in
+	glBlendFunc(GL_ONE_MINUS_DST_ALPHA, GL_DST_ALPHA);
+	util.creationShader->Bind();
+	Util::DrawVerticesWithIndex(util.fieldVbo, util.fieldIbo, util.field.indices.size());
+	util.creationShader->Unbind();
+
+	glDisable(GL_BLEND);
+
+	SDL_GL_SwapWindow(util.window);
 }
 
 int main()
 {
-	const Uint16 SCREEN_W = 1280;
-	const Uint16 SCREEN_H = 720;
-	std::vector<Line> vecLines;
-
-
-	SDL_Window* window = nullptr;
-	SDL_GLContext glContext = NULL;
-
 	SDL_Init(SDL_INIT_EVERYTHING);
 	IMG_Init(IMG_INIT_PNG);
 
@@ -63,10 +100,8 @@ int main()
 	SDL_GL_SetAttribute(SDL_GL_BUFFER_SIZE, 32); //Bitgröße des Buffers; jeder Pixel braucht 32bit; 4 Werte pro Pixel, mit je 8bit
 	SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
 
-
-	Uint32 winFlags = SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE;
-	window = SDL_CreateWindow("Shadow Casting", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, SCREEN_W, SCREEN_H, winFlags);
-	glContext = SDL_GL_CreateContext(window);
+	Util util = Util();
+	srand(time(NULL));
 
 	if (glewInit() != GLEW_OK)
 		return 0;
@@ -77,27 +112,23 @@ int main()
 	glDebugMessageCallback(OpenGLDebugCallback, 0);
 #endif
 
+	//glEnable(GL_BLEND);
+	//glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+	glBlendFunc(GL_SRC_ALPHA, GL_DST_ALPHA);
+	glBlendEquation(GL_FUNC_ADD);
+	//glBlendEquation(GL_MAX);
 
-	Field field = Field(SCREEN_W, SCREEN_H, &vecLines);
-	LightMap light = LightMap();
+	util.SetupShader();
+	util.creationShader->Bind();
 
-	VertexBuffer fieldVertexBuffer = VertexBuffer(&field.vertices[0], (int)field.vertices.size());
-	IndexBuffer fieldIndexBuffer = IndexBuffer(&field.indices[0], (int)field.indices.size(), sizeof(field.indices[0]));
-	Shader shader = Shader("shader.vert", "shader.frag");
-	shader.Bind();
+	std::cout << "R ... switch creation and light mode" << "\n\n";
 
+	util.InitLightSources();
 
-	std::cout << "R ... switch creation and light mode" << std::endl << std::endl;
-
-	//Get the mouse middle uniform
-	int mousePosUniformId;
-	mousePosUniformId = glGetUniformLocation(shader.GetShaderID(), "a_mouseMiddle");
-	glUniform2f(mousePosUniformId, (float)(SCREEN_W / 2), (float)(SCREEN_H / 2)); //Sets the mouse uniform
-
-
-	glClearScreen(WHITE);
-	glDrawVerticesWithIndex(window, &fieldVertexBuffer, &fieldIndexBuffer, field.indices);
-	SDL_GL_SwapWindow(window);
+	Util::ClearScreen(WHITE);
+	Util::DrawVerticesWithIndex(util.fieldVbo, util.fieldIbo, util.field.indices.size());
+	SDL_GL_SwapWindow(util.window);
+	util.creationShader->Unbind();
 
 	bool creationMode = true;
 	bool close = false; 
@@ -111,85 +142,57 @@ int main()
 			{
 				if (event.button.button == SDL_BUTTON_LEFT && !creationMode)
 				{
-					light.vertices.clear();
-					light.indices.clear();
-
-					int mouseX, mouseY;
-					SDL_GetMouseState(&mouseX, &mouseY);
-
-					light.CalcShadows(((float)mouseX / (float)SCREEN_W * 2.0f) - 1.0f, (((float)mouseY / (float)SCREEN_H * 2.0f) - 1.0f) * (-1), vecLines, field.verticesWLight);
-
-					VertexBuffer lightVertexBuffer = VertexBuffer(&light.vertices[0], (int)light.vertices.size());
-					IndexBuffer lightIndexBuffer = IndexBuffer(&light.indices[0], (int)light.indices.size(), sizeof(light.indices[0]));
-										
-					glUniform2f(mousePosUniformId, (float)mouseX, (float)(SCREEN_H - mouseY)); //Sets the mouse uniform
-
-					glClearScreen(BLACK);
-					glDrawVerticesWithIndex(window, &lightVertexBuffer, &lightIndexBuffer, light.indices);
-					glDrawVerticesWithIndex(window, &fieldVertexBuffer, &fieldIndexBuffer, field.indices);
-					SDL_GL_SwapWindow(window);
+					CalcShadows(util);
 				}
 			}
 			else if (event.type == SDL_MOUSEBUTTONDOWN)
 			{
 				if (event.button.button == SDL_BUTTON_LEFT && !creationMode)
 				{
-					int mouseX, mouseY;
-					SDL_GetMouseState(&mouseX, &mouseY);
-
-					light.CalcShadows(((float)mouseX / (float)SCREEN_W * 2.0f) - 1.0f, (((float)mouseY / (float)SCREEN_H * 2.0f) - 1.0f) * (-1), vecLines, field.verticesWLight);
-
-					VertexBuffer lightVertexBuffer = VertexBuffer(&light.vertices[0], (int)light.vertices.size());
-					IndexBuffer lightIndexBuffer = IndexBuffer(&light.indices[0], (int)light.indices.size(), sizeof(light.indices[0]));
-
-					glUniform2f(mousePosUniformId, (float)mouseX, (float)(SCREEN_H - mouseY)); //Sets the mouse uniform
-
-					glClearScreen(BLACK);
-					glDrawVerticesWithIndex(window, &lightVertexBuffer, &lightIndexBuffer, light.indices);
-					glDrawVerticesWithIndex(window, &fieldVertexBuffer, &fieldIndexBuffer, field.indices);
-					SDL_GL_SwapWindow(window);
+					CalcShadows(util);
 				}
 				else if (event.button.button == SDL_BUTTON_LEFT && creationMode)
 				{
+					util.creationShader->Bind();
 					int mouseX, mouseY;
 					SDL_GetMouseState(&mouseX, &mouseY);
 
-					field.SetRect(((float)mouseX / (float)SCREEN_W * 2.0f) - 1.0f, (((float)mouseY / (float)SCREEN_H * 2.0f) - 1.0f) * (-1), &vecLines);
+					util.field.SetRect(((float)mouseX / (float)util.SW * 2.0f) - 1.0f, (((float)mouseY / (float)util.SH * 2.0f) - 1.0f) * (-1), &util.vecLines);
 
-					fieldVertexBuffer.ResizeBuffer(&field.vertices[0], (int)field.vertices.size());
-					fieldIndexBuffer.ResizeBuffer(&field.indices[0], (int)field.indices.size(), sizeof(field.indices[0]));
+					util.fieldVbo->ResizeBuffer(&util.field.vertices[0], (int)util.field.vertices.size());
+					util.fieldIbo->ResizeBuffer(&util.field.indices[0], (int)util.field.indices.size(), sizeof(util.field.indices[0]));
 
 
-					glClearScreen(WHITE);
-					glDrawVerticesWithIndex(window, &fieldVertexBuffer, &fieldIndexBuffer, field.indices);
-					SDL_GL_SwapWindow(window);
+					Util::ClearScreen(WHITE);
+					Util::DrawVerticesWithIndex(util.fieldVbo, util.fieldIbo, util.field.indices.size());
+					SDL_GL_SwapWindow(util.window);
+					util.creationShader->Unbind();
 				}
 				else if (event.button.button == SDL_BUTTON_RIGHT && creationMode)
 				{
+					util.creationShader->Bind();
 					int mouseX, mouseY;
 					SDL_GetMouseState(&mouseX, &mouseY);
 
-					field.DeleteRect(((float)mouseX / (float)SCREEN_W * 2.0f) - 1.0f, (((float)mouseY / (float)SCREEN_H * 2.0f) - 1.0f) * (-1), &vecLines);
+					util.field.DeleteRect(((float)mouseX / (float)util.SW * 2.0f) - 1.0f, (((float)mouseY / (float)util.SH * 2.0f) - 1.0f) * (-1), &util.vecLines);
 
-					fieldVertexBuffer.ResizeBuffer(&field.vertices[0], (int)field.vertices.size());
-					if(field.indices.size() != 0)
-						fieldIndexBuffer.ResizeBuffer(&field.indices[0], (int)field.indices.size(), sizeof(field.indices[0]));
+					util.fieldVbo->ResizeBuffer(&util.field.vertices[0], (int)util.field.vertices.size());
+					if(util.field.indices.size() != 0)
+						util.fieldIbo->ResizeBuffer(&util.field.indices[0], (int)util.field.indices.size(), sizeof(util.field.indices[0]));
 
 
-					glClearScreen(WHITE);
-					glDrawVerticesWithIndex(window, &fieldVertexBuffer, &fieldIndexBuffer, field.indices);
-					SDL_GL_SwapWindow(window);
+					Util::ClearScreen(WHITE);
+					Util::DrawVerticesWithIndex(util.fieldVbo, util.fieldIbo, util.field.indices.size());
+					SDL_GL_SwapWindow(util.window);
+					util.creationShader->Unbind();
 				}
 			}
 			else if (event.type == SDL_MOUSEBUTTONUP)
 			{
 				if (event.button.button == SDL_BUTTON_LEFT && !creationMode)
 				{
-					light.vertices.clear();
-					light.indices.clear();
-
-					glClearScreen(BLACK);
-					SDL_GL_SwapWindow(window);
+					Util::ClearScreen(BLACK);
+					SDL_GL_SwapWindow(util.window);
 				}
 			}
 			else if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_r)
@@ -197,21 +200,21 @@ int main()
 				if (creationMode)
 				{
 					creationMode = false;
-
 					SDL_ShowCursor(false);
 
-					glClearScreen(BLACK);
-					SDL_GL_SwapWindow(window);
+					Util::ClearScreen(BLACK);
+					SDL_GL_SwapWindow(util.window);
 				}
 				else
 				{
+					util.creationShader->Bind();
 					creationMode = true;
-
 					SDL_ShowCursor(true);
 
-					glClearScreen(WHITE);
-					glDrawVerticesWithIndex(window, &fieldVertexBuffer, &fieldIndexBuffer, field.indices);
-					SDL_GL_SwapWindow(window);
+					Util::ClearScreen(WHITE);
+					Util::DrawVerticesWithIndex(util.fieldVbo, util.fieldIbo, util.field.indices.size());
+					SDL_GL_SwapWindow(util.window);
+					util.creationShader->Unbind();
 				}
 			}
 			else if (event.type == SDL_QUIT)
@@ -221,5 +224,6 @@ int main()
 		}
 	}
 	
+	SDL_Quit();
 	return 0;
 }

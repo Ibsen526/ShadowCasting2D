@@ -1,13 +1,13 @@
 #pragma once
-#define GLEW_STATIC
 #include <GL/glew.h>
 #include <GL/GL.h>
 #include <GL/GLU.h>
-#include <SDL.h>
+#include <SDL2/SDL.h>
 
 class IndexBuffer
 {
 public:
+	IndexBuffer() { bufferID = 0; }
 	IndexBuffer(void* data, int numVertices, Uint8 indexSize);
 	~IndexBuffer();
 
